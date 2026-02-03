@@ -35,11 +35,13 @@ def _gen_name():
 # --- State ---
 
 class Player:
-    __slots__ = ("ws","id","name","in_lobby","match","best_score")
-    def __init__(self, ws, pid, name):
+    __slots__ = ("ws", "id", "player_id", "name", "elo", "in_lobby", "match", "best_score")
+    def __init__(self, ws, pid, name, elo=1000, player_id=""):
         self.ws = ws
-        self.id = pid
+        self.id = pid  # Session ID (server-assigned)
+        self.player_id = player_id  # Persistent player ID (from client)
         self.name = name
+        self.elo = elo
         self.in_lobby = False
         self.match = None
         self.best_score = 0
@@ -67,7 +69,7 @@ async def _broadcast_lobby():
     """Send updated lobby list to everyone in the lobby."""
     lobby = [p for p in players.values() if p.in_lobby]
     total = len(players)
-    plist = [{"id": p.id, "name": p.name} for p in lobby]
+    plist = [{"id": p.id, "name": p.name, "elo": p.elo} for p in lobby]
     msg = {"type": "lobby_list", "players": plist, "total_online": total}
     for p in lobby:
         await _send(p.ws, msg)
@@ -102,10 +104,23 @@ async def _handle_challenge(player, data):
     target.match = m
     target.best_score = 0
 
-    await _send(player.ws, {"type": "match_start", "seed": seed, "opponent": target.name})
-    await _send(target.ws, {"type": "match_start", "seed": seed, "opponent": player.name})
+    # Include opponent's name, ELO, and player_id in match_start
+    await _send(player.ws, {
+        "type": "match_start",
+        "seed": seed,
+        "opponent": target.name,
+        "opponent_elo": target.elo,
+        "opponent_player_id": target.player_id
+    })
+    await _send(target.ws, {
+        "type": "match_start",
+        "seed": seed,
+        "opponent": player.name,
+        "opponent_elo": player.elo,
+        "opponent_player_id": player.player_id
+    })
     await _broadcast_lobby()
-    print(f"  [MATCH] {player.name} vs {target.name} | seed={seed}")
+    print(f"  [MATCH] {player.name} ({player.elo}) vs {target.name} ({target.elo}) | seed={seed}")
 
 async def _handle_score(player, data):
     m = player.match
@@ -121,21 +136,62 @@ async def _handle_match_end(player, data):
         return
     player.best_score = data.get("best_score", player.best_score)
     m.ended = True
+    
+    # Calculate ELO changes using standard chess formula (K-factor = 32)
+    K = 32
+    elo_changes = {}
     for p, o in [(m.p1, m.p2), (m.p2, m.p1)]:
-        r = "win" if p.best_score > o.best_score else ("lose" if p.best_score < o.best_score else "draw")
-        await _send(p.ws, {"type": "match_result", "result": r, "my_score": p.best_score, "opp_score": o.best_score})
+        result = "win" if p.best_score > o.best_score else ("lose" if p.best_score < o.best_score else "draw")
+        actual = 1.0 if result == "win" else (0.0 if result == "lose" else 0.5)
+        expected = 1.0 / (1.0 + 10 ** ((o.elo - p.elo) / 400.0))
+        elo_change = int(round(K * (actual - expected)))
+        elo_changes[p.id] = (result, elo_change, o)
+    
+    # Update ELOs and send results
+    for p in [m.p1, m.p2]:
+        result, elo_change, opponent = elo_changes[p.id]
+        p.elo += elo_change
+        p.elo = max(100, p.elo)  # Minimum ELO is 100
+        await _send(p.ws, {
+            "type": "match_result",
+            "result": result,
+            "my_score": p.best_score,
+            "opp_score": opponent.best_score,
+            "elo_change": elo_change,
+            "opponent_name": opponent.name,
+            "opponent_elo": opponent.elo,
+            "opponent_player_id": opponent.player_id
+        })
+    
     m.p1.match = None
     m.p2.match = None
-    print(f"  [END] {m.p1.name}={m.p1.best_score} vs {m.p2.name}={m.p2.best_score}")
+    print(f"  [END] {m.p1.name}({m.p1.elo})={m.p1.best_score} vs {m.p2.name}({m.p2.elo})={m.p2.best_score}")
 
 async def _handle_disconnect(player):
     m = player.match
     if m and not m.ended:
         m.ended = True
         opp = m.p2 if player == m.p1 else m.p1
+        
+        # Calculate opponent's ELO gain (treat as win)
+        K = 32
+        expected = 1.0 / (1.0 + 10 ** ((player.elo - opp.elo) / 400.0))
+        elo_change = int(round(K * (1.0 - expected)))
+        
+        opp.elo += elo_change
+        opp.elo = max(100, opp.elo)
+        
         opp.match = None
-        await _send(opp.ws, {"type": "opponent_disconnected"})
-        print(f"  [DC] {player.name} left match -> {opp.name} wins")
+        await _send(opp.ws, {
+            "type": "opponent_disconnected",
+            "elo_change": elo_change,
+            "my_score": opp.best_score,
+            "opp_score": player.best_score,
+            "opponent_name": player.name,
+            "opponent_elo": player.elo,
+            "opponent_player_id": player.player_id
+        })
+        print(f"  [DC] {player.name} left match -> {opp.name} wins (+{elo_change} ELO)")
 
     was_lobby = player.in_lobby
     if player.ws in players:
@@ -165,7 +221,15 @@ async def handler(ws):
                 data = json.loads(raw)
                 t = data.get("type", "")
                 if t == "join_lobby":
+                    # Update player info from client data
+                    if "name" in data and data["name"]:
+                        player.name = data["name"]
+                    if "elo" in data:
+                        player.elo = data["elo"]
+                    if "player_id" in data:
+                        player.player_id = data["player_id"]
                     player.in_lobby = True
+                    print(f"  [LOBBY] {player.name} (ELO {player.elo}) joined lobby")
                     await _broadcast_lobby()
                 elif t == "leave_lobby":
                     player.in_lobby = False
@@ -177,10 +241,24 @@ async def handler(ws):
                 elif t == "match_end":
                     await _handle_match_end(player, data)
                 elif t == "rejoin_lobby":
+                    # Update player info on rejoin too
+                    if "name" in data and data["name"]:
+                        player.name = data["name"]
+                    if "elo" in data:
+                        player.elo = data["elo"]
                     player.match = None
                     player.best_score = 0
                     player.in_lobby = True
+                    print(f"  [LOBBY] {player.name} (ELO {player.elo}) rejoined lobby")
                     await _broadcast_lobby()
+                elif t == "update_info":
+                    # Allow updating name/elo at any time
+                    if "name" in data and data["name"]:
+                        player.name = data["name"]
+                    if "elo" in data:
+                        player.elo = data["elo"]
+                    if player.in_lobby:
+                        await _broadcast_lobby()
             except json.JSONDecodeError:
                 pass
     except websockets.exceptions.ConnectionClosed:
