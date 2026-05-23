@@ -11,6 +11,8 @@ import asyncio
 import json
 import os
 import random
+import sys
+sys.stdout.reconfigure(line_buffering=True)  # flush every line in production
 
 try:
     import websockets
@@ -277,7 +279,7 @@ async def handler(ws):
 # --- Main ---
 
 async def main():
-    print(f"=== Laser Chess Server ===")
+    print(f"=== Laser Chess Server v2 (ghost relay) ===")
     print(f"Listening on ws://{HOST}:{PORT}")
     print()
     async with serve(handler, HOST, PORT):
