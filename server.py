@@ -311,7 +311,11 @@ async def handler(ws):
     await _send(ws, {"type": "welcome", "id": player.id, "name": name})
 
     try:
-        async for raw in ws:
+        while True:
+            try:
+                raw = await ws.recv()
+            except websockets.exceptions.ConnectionClosed:
+                break
             try:
                 data = json.loads(raw)
                 t = data.get("type", "")
@@ -329,7 +333,6 @@ async def handler(ws):
                     m = player.match
                     if m and not m.ended:
                         opp = m.p2 if player == m.p1 else m.p1
-                        print(f"  [GHOST] {player.name} -> {opp.name} ({data.get('x')},{data.get('y')})")
                         await _send(opp.ws, {
                             "type": "opponent_ghost",
                             "x": data.get("x", 0),
@@ -350,9 +353,6 @@ async def handler(ws):
 
             except json.JSONDecodeError:
                 pass
-
-    except websockets.exceptions.ConnectionClosed:
-        pass
     finally:
         await _handle_disconnect(player)
 
