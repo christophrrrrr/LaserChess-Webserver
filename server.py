@@ -42,7 +42,7 @@ def _gen_name():
 class Player:
     __slots__ = ("ws","id","player_id","name",
                  "elo_bullet","elo_blitz","elo_rapid",
-                 "match","best_score","queue_mode","queue_time")
+                 "match","best_score","queue_mode","queue_time","hat")
     def __init__(self, ws, pid, name):
         self.ws         = ws
         self.id         = pid
@@ -55,6 +55,7 @@ class Player:
         self.best_score = 0
         self.queue_mode = None
         self.queue_time = None
+        self.hat        = ""
 
 class Match:
     __slots__ = ("p1","p2","seed","ended","mode")
@@ -103,6 +104,7 @@ async def _handle_queue(player, data):
     if "elo_rapid"  in data: player.elo_rapid  = max(100, int(data["elo_rapid"]))
     if "name"      in data and data["name"]: player.name      = data["name"]
     if "player_id" in data:                  player.player_id = data["player_id"]
+    if "hat"       in data:                  player.hat       = data.get("hat", "")
 
     # Remove from any existing queue
     for q in queues.values():
@@ -268,13 +270,16 @@ async def _start_match(p1, p2, mode):
     p1.match = m; p1.queue_mode = None; p1.best_score = 0
     p2.match = m; p2.queue_mode = None; p2.best_score = 0
 
+    match_start_time = time.time()
     await _send(p1.ws, {
         "type": "match_start",
         "seed": seed,
         "opponent": p2.name,
         "opponent_elo": _get_elo(p2, mode),
         "opponent_player_id": p2.player_id,
-        "time_mode": mode
+        "opponent_hat": p2.hat,
+        "time_mode": mode,
+        "server_time": match_start_time
     })
     await _send(p2.ws, {
         "type": "match_start",
@@ -282,7 +287,9 @@ async def _start_match(p1, p2, mode):
         "opponent": p1.name,
         "opponent_elo": _get_elo(p1, mode),
         "opponent_player_id": p1.player_id,
-        "time_mode": mode
+        "opponent_hat": p1.hat,
+        "time_mode": mode,
+        "server_time": match_start_time
     })
     print(f"  [MATCH] {p1.name}({_get_elo(p1,mode)}) vs {p2.name}({_get_elo(p2,mode)}) | {mode} seed={seed}")
 
