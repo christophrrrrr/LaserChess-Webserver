@@ -246,8 +246,8 @@ async def _try_match_queue(mode: str):
             range2 = int(100 + 50 * (wait2 / 10.0))
 
             diff = abs(elo1 - elo2)
-            # Both players must be within each other's acceptable range
-            if diff <= min(range1, range2) and diff < best_diff:
+            # Match if EITHER player's expanded range covers the diff
+            if diff <= max(range1, range2) and diff < best_diff:
                 best_diff = diff
                 best = p2
 
@@ -288,9 +288,12 @@ async def _start_match(p1, p2, mode):
 
 async def _matchmaking_loop():
     while True:
-        await asyncio.sleep(1.0)
-        for mode in queues:
-            await _try_match_queue(mode)
+        try:
+            await asyncio.sleep(1.0)
+            for mode in queues:
+                await _try_match_queue(mode)
+        except Exception as e:
+            print(f"[ERROR] matchmaking loop: {e}")
 
 # --- WebSocket Handler ---
 
@@ -332,6 +335,9 @@ async def handler(ws):
                             "x": data.get("x", 0),
                             "y": data.get("y", 0)
                         })
+
+                elif t == "ping":
+                    await _send(player.ws, {"type": "pong"})
 
                 elif t == "match_end":
                     await _handle_match_end(player, data)
