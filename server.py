@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
 """
-Laser Chess — Auto-Matchmaking Server v3
-Queue-based: players join a mode queue (bullet/blitz/rapid), server auto-matches
-by ELO proximity. Search range widens every 10 s until anyone is accepted.
+Laser Chess — Auto-Matchmaking Server v4
+Queue-based: players join a mode queue, server auto-matches by ELO proximity.
+Search range widens every 10 s until anyone is accepted.
+
+v4: adds the single "standard" queue (2:00) used by current clients. The
+legacy bullet/blitz/rapid queues stay so old app versions keep matching each
+other — they never cross-match with standard.
 
 Local:   pip install websockets && python server.py
 Deploy:  Push to GitHub → Render.com auto-deploys from this repo
@@ -41,7 +45,7 @@ def _gen_name():
 
 class Player:
     __slots__ = ("ws","id","player_id","name",
-                 "elo_bullet","elo_blitz","elo_rapid",
+                 "elo_bullet","elo_blitz","elo_rapid","elo_standard",
                  "match","best_score","queue_mode","queue_time","hat")
     def __init__(self, ws, pid, name):
         self.ws         = ws
@@ -51,6 +55,7 @@ class Player:
         self.elo_bullet = 1000
         self.elo_blitz  = 1000
         self.elo_rapid  = 1000
+        self.elo_standard = 1000
         self.match      = None
         self.best_score = 0
         self.queue_mode = None
@@ -67,19 +72,21 @@ class Match:
         self.mode  = mode
 
 players = {}   # ws -> Player
-queues  = {"bullet": [], "blitz": [], "rapid": []}
+queues  = {"standard": [], "bullet": [], "blitz": [], "rapid": []}
 _next_id = 0
 
 # --- ELO helpers ---
 
 def _get_elo(p, mode):
+    if mode == "standard": return p.elo_standard
     if mode == "blitz": return p.elo_blitz
     if mode == "rapid": return p.elo_rapid
     return p.elo_bullet
 
 def _set_elo(p, mode, value):
     value = max(100, value)
-    if mode == "blitz": p.elo_blitz  = value
+    if mode == "standard": p.elo_standard = value
+    elif mode == "blitz": p.elo_blitz  = value
     elif mode == "rapid": p.elo_rapid = value
     else: p.elo_bullet = value
 
@@ -102,6 +109,7 @@ async def _handle_queue(player, data):
     if "elo_bullet" in data: player.elo_bullet = max(100, int(data["elo_bullet"]))
     if "elo_blitz"  in data: player.elo_blitz  = max(100, int(data["elo_blitz"]))
     if "elo_rapid"  in data: player.elo_rapid  = max(100, int(data["elo_rapid"]))
+    if "elo_standard" in data: player.elo_standard = max(100, int(data["elo_standard"]))
     if "name"      in data and data["name"]: player.name      = data["name"]
     if "player_id" in data:                  player.player_id = data["player_id"]
     if "hat"       in data:                  player.hat       = data.get("hat", "")
@@ -357,6 +365,7 @@ async def handler(ws):
                     if "elo_bullet" in data: player.elo_bullet = max(100, int(data["elo_bullet"]))
                     if "elo_blitz"  in data: player.elo_blitz  = max(100, int(data["elo_blitz"]))
                     if "elo_rapid"  in data: player.elo_rapid  = max(100, int(data["elo_rapid"]))
+                    if "elo_standard" in data: player.elo_standard = max(100, int(data["elo_standard"]))
 
             except json.JSONDecodeError:
                 pass
@@ -366,7 +375,7 @@ async def handler(ws):
 # --- Main ---
 
 async def main():
-    print(f"=== Laser Chess Server v3 (auto-matchmaking) ===")
+    print(f"=== Laser Chess Server v4 (auto-matchmaking, standard queue) ===")
     print(f"Listening on ws://{HOST}:{PORT}")
     print()
     asyncio.create_task(_matchmaking_loop())
